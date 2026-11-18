@@ -1304,3 +1304,135 @@ textarea:focus {
     display: none;
   }
 }
+
+/* Settings, toast, header actions (app mode) */
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.icon-btn {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--plum);
+  cursor: pointer;
+}
+
+.icon-btn:hover {
+  border-color: var(--gold);
+}
+
+.link-btn {
+  border: 0;
+  background: none;
+  padding: 0;
+  color: var(--plum);
+  font-weight: 600;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.camera-btn {
+  width: 100%;
+  margin-top: 10px;
+  padding: 13px 18px;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: rgba(30, 10, 20, 0.55);
+  overflow-y: auto;
+}
+
+.modal {
+  width: 100%;
+  max-width: 520px;
+  margin: 0;
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
+}
+
+.modal h2 {
+  font-size: 1.8rem;
+  margin-bottom: 6px;
+}
+
+.modal .form {
+  margin-top: 16px;
+  gap: 16px;
+}
+
+.modal a {
+  color: var(--plum);
+  font-weight: 600;
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.92rem;
+}
+
+.modal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.modal-actions .spacer {
+  flex: 1;
+}
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: calc(20px + env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  z-index: 60;
+  max-width: calc(100% - 32px);
+  padding: 11px 18px;
+  border-radius: 999px;
+  background: var(--ink);
+  color: #fff;
+  font-size: 0.9rem;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+}
+
+/* Respect the Android status bar / notch in the app */
+.site-header {
+  padding-top: env(safe-area-inset-top);
+}
+
+.brand span {
+  white-space: nowrap;
+}
+
+@media (max-width: 420px) {
+  .brand {
+    font-size: 1.1rem;
+    gap: 8px;
+  }
+
+  .brand svg {
+    width: 28px;
+    height: 28px;
+  }
+
+  .pill {
+    padding: 3px 8px;
+    font-size: 0.68rem;
+  }
+}

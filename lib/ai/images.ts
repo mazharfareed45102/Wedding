@@ -1,15 +1,23 @@
-import { HttpError, type InputImage } from "./http";
+import { HttpError } from "../errors";
+import type { ImageProvider, InputImage } from "../schema";
 
 // Turns the original photo + an edit instruction into the decorated "after" photo.
-// Supports Google Gemini image models and OpenAI GPT Image. Model names change
-// often, so each provider tries a short list and skips models the account
-// doesn't have.
+// Supports Google Gemini image models and OpenAI GPT Image. Runs on the server
+// (web app) or directly on the phone (Android app). Model names change often,
+// so each provider tries a short list and skips models the key can't use.
 
-export type ImageProvider = "gemini" | "openai";
-
-// Optional overrides, e.g. for an API gateway or local testing.
-const GEMINI_BASE = (process.env.GEMINI_API_BASE || "https://generativelanguage.googleapis.com").replace(/\/$/, "");
-const OPENAI_BASE = (process.env.OPENAI_API_BASE || "https://api.openai.com").replace(/\/$/, "");
+export interface ImageConfig {
+  provider: ImageProvider;
+  apiKey: string;
+  /** Preferred model; the defaults are tried after it. */
+  model?: string;
+  /** OpenAI only: low | medium | high */
+  quality?: string;
+  /** Override the API host, e.g. for an API gateway or local testing. */
+  baseUrl?: string;
+  /** Where the user changes settings, used in error messages. */
+  settingsHint?: { model: string };
+}
 
 export interface GeneratedImage {
   dataUrl: string;
@@ -17,26 +25,25 @@ export interface GeneratedImage {
   model: string;
 }
 
-export function imageProvider(): ImageProvider | null {
-  const hasGemini = Boolean(process.env.GEMINI_API_KEY);
-  const hasOpenAI = Boolean(process.env.OPENAI_API_KEY);
-  const preferred = process.env.IMAGE_PROVIDER?.toLowerCase();
-  if (preferred === "openai" && hasOpenAI) return "openai";
-  if (preferred === "gemini" && hasGemini) return "gemini";
-  if (hasGemini) return "gemini";
-  if (hasOpenAI) return "openai";
-  return null;
+export async function generateImage(
+  image: InputImage,
+  prompt: string,
+  aspect: number,
+  cfg: ImageConfig,
+): Promise<GeneratedImage> {
+  if (cfg.provider === "gemini") return generateWithGemini(image, prompt, aspect, cfg);
+  return generateWithOpenAI(image, prompt, aspect, cfg);
 }
 
-export async function generateImage(image: InputImage, prompt: string, aspect: number): Promise<GeneratedImage> {
-  const provider = imageProvider();
-  if (provider === "gemini") return generateWithGemini(image, prompt, aspect);
-  if (provider === "openai") return generateWithOpenAI(image, prompt, aspect);
-  throw new HttpError(500, "No image provider is configured.");
+function candidates(preferred: string | undefined, defaults: string[]) {
+  return [...new Set([preferred?.trim(), ...defaults].filter((m): m is string => Boolean(m)))];
 }
 
-function candidates(envValue: string | undefined, defaults: string[]) {
-  return [...new Set([envValue?.trim(), ...defaults].filter((m): m is string => Boolean(m)))];
+function base64ToBytes(b64: string) {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
 }
 
 class ModelUnavailable extends Error {}
@@ -44,7 +51,8 @@ class ModelUnavailable extends Error {}
 // Models this server has already found missing, so later requests skip them.
 const unavailable = new Set<string>();
 
-async function tryModels(models: string[], run: (model: string) => Promise<string>, provider: ImageProvider) {
+async function tryModels(models: string[], run: (model: string) => Promise<string>, cfg: ImageConfig) {
+  const { provider } = cfg;
   const usable = models.filter((m) => !unavailable.has(`${provider}:${m}`));
   for (const model of usable.length ? usable : models) {
     try {
@@ -58,7 +66,7 @@ async function tryModels(models: string[], run: (model: string) => Promise<strin
         throw new HttpError(504, "The picture took too long to create. Please try again.");
       }
       if (error instanceof TypeError) {
-        throw new HttpError(503, `Couldn't reach the ${provider} image service. Check the server's internet connection.`);
+        throw new HttpError(503, `Couldn't reach the ${provider} image service. Check your internet connection.`);
       }
       throw error;
     }
@@ -66,7 +74,7 @@ async function tryModels(models: string[], run: (model: string) => Promise<strin
   throw new HttpError(
     500,
     `None of these ${provider} image models are available to your API key: ${models.join(", ")}. Set ${
-      provider === "gemini" ? "GEMINI_IMAGE_MODEL" : "OPENAI_IMAGE_MODEL"
+      cfg.settingsHint?.model ?? "the image model"
     } to a model your account can use.`,
   );
 }
@@ -109,8 +117,9 @@ interface GeminiPart {
   inline_data?: { mime_type?: string; data?: string };
 }
 
-async function generateWithGemini(image: InputImage, prompt: string, aspect: number) {
-  const models = candidates(process.env.GEMINI_IMAGE_MODEL, [
+async function generateWithGemini(image: InputImage, prompt: string, aspect: number, cfg: ImageConfig) {
+  const base = (cfg.baseUrl || "https://generativelanguage.googleapis.com").replace(/\/$/, "");
+  const models = candidates(cfg.model, [
     "gemini-3.1-flash-image",
     "gemini-3.1-flash-image-preview",
     "gemini-3-pro-image-preview",
@@ -120,10 +129,10 @@ async function generateWithGemini(image: InputImage, prompt: string, aspect: num
     models,
     async (model) => {
       const res = await fetch(
-        `${GEMINI_BASE}/v1beta/models/${encodeURIComponent(model)}:generateContent`,
+        `${base}/v1beta/models/${encodeURIComponent(model)}:generateContent`,
         {
           method: "POST",
-          headers: { "content-type": "application/json", "x-goog-api-key": process.env.GEMINI_API_KEY ?? "" },
+          headers: { "content-type": "application/json", "x-goog-api-key": cfg.apiKey },
           body: JSON.stringify({
             contents: [
               {
@@ -159,7 +168,7 @@ async function generateWithGemini(image: InputImage, prompt: string, aspect: num
         `The image model didn't return a picture${reason ? ` (${reason})` : ""}. Try generating again, or try a different photo.`,
       );
     },
-    "gemini",
+    cfg,
   );
 }
 
@@ -171,10 +180,11 @@ function openAISize(aspect: number) {
   return "1024x1024";
 }
 
-async function generateWithOpenAI(image: InputImage, prompt: string, aspect: number) {
-  const models = candidates(process.env.OPENAI_IMAGE_MODEL, ["gpt-image-2", "gpt-image-1.5", "gpt-image-1"]);
-  const quality = process.env.OPENAI_IMAGE_QUALITY || "medium";
-  const bytes = Buffer.from(image.data, "base64");
+async function generateWithOpenAI(image: InputImage, prompt: string, aspect: number, cfg: ImageConfig) {
+  const base = (cfg.baseUrl || "https://api.openai.com").replace(/\/$/, "");
+  const models = candidates(cfg.model, ["gpt-image-2", "gpt-image-1.5", "gpt-image-1"]);
+  const quality = cfg.quality || "medium";
+  const bytes = base64ToBytes(image.data);
   const ext = image.mediaType.split("/")[1];
   return tryModels(
     models,
@@ -186,9 +196,9 @@ async function generateWithOpenAI(image: InputImage, prompt: string, aspect: num
       form.append("size", openAISize(aspect));
       form.append("quality", quality);
       form.append("n", "1");
-      const res = await fetch(`${OPENAI_BASE}/v1/images/edits`, {
+      const res = await fetch(`${base}/v1/images/edits`, {
         method: "POST",
-        headers: { authorization: `Bearer ${process.env.OPENAI_API_KEY ?? ""}` },
+        headers: { authorization: `Bearer ${cfg.apiKey}` },
         body: form,
         signal: AbortSignal.timeout(170_000),
       });
@@ -210,6 +220,6 @@ async function generateWithOpenAI(image: InputImage, prompt: string, aspect: num
       if (!b64) throw new HttpError(502, "The image model didn't return a picture. Please try again.");
       return `data:image/png;base64,${b64}`;
     },
-    "openai",
+    cfg,
   );
 }

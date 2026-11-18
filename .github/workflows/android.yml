@@ -1,0 +1,67 @@
+name: Build Android app
+
+# Builds the Android APK on every push and publishes it as the
+# "latest-apk" GitHub release, ready to download on a phone.
+
+on:
+  push:
+    paths-ignore:
+      - "**.md"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  apk:
+    name: Build APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build the app's web files
+        run: npm run build:mobile
+
+      - name: Copy web files into the Android project
+        run: npx cap sync android
+
+      - name: Build the APK
+        working-directory: android
+        run: ./gradlew assembleRelease --no-daemon --stacktrace
+
+      - name: Name the APK
+        run: cp android/app/build/outputs/apk/release/app-release.apk WeddingDecorStudio.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WeddingDecorStudio-apk
+          path: WeddingDecorStudio.apk
+
+      - name: Publish as the latest-apk release
+        if: github.ref_name == github.event.repository.default_branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete latest-apk --yes --cleanup-tag || true
+          gh release create latest-apk WeddingDecorStudio.apk \
+            --target "${{ github.sha }}" \
+            --title "Wedding Decor Studio for Android (build ${{ github.run_number }})" \
+            --notes "Download **WeddingDecorStudio.apk** below on your Android phone and open it to install. If Android asks, allow installing apps from your browser. Open the app, tap the settings gear and add your API keys. Built from ${{ github.sha }}."

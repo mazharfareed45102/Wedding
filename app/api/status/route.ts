@@ -1,15 +1,14 @@
 import { NextResponse } from "next/server";
 import type { StatusResponse } from "@/lib/schema";
-import { claudeConfigured } from "@/lib/server/claude";
-import { imageProvider } from "@/lib/server/imagegen";
+import { serverDesignerConfig, serverImageConfig } from "@/lib/server/config";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
   return NextResponse.json<StatusResponse>({
-    designer: claudeConfigured(),
-    imageProvider: imageProvider(),
+    designer: serverDesignerConfig() !== null,
+    imageProvider: serverImageConfig()?.provider ?? null,
     passcodeRequired: Boolean(process.env.APP_PASSCODE),
   });
 }

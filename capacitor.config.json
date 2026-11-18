@@ -1,0 +1,13 @@
+{
+  "appId": "com.weddingdecorstudio.app",
+  "appName": "Wedding Decor Studio",
+  "webDir": "out",
+  "android": {
+    "backgroundColor": "#fbf7f0"
+  },
+  "plugins": {
+    "SystemBars": {
+      "style": "LIGHT"
+    }
+  }
+}

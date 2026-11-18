@@ -1,42 +1,55 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { betaZodOutputFormat } from "@anthropic-ai/sdk/helpers/beta/zod";
+import { HttpError } from "../errors";
 import type { EventDetails } from "../options";
 import { buildDesignRequest, DESIGNER_SYSTEM_PROMPT } from "../prompts";
-import { DesignResultSchema, type DesignResult } from "../schema";
-import { HttpError, type InputImage } from "./http";
+import { DesignResultSchema, type DesignResult, type InputImage } from "../schema";
 
-const MODEL = process.env.DESIGNER_MODEL || "claude-opus-5-5";
-const EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
-type Effort = (typeof EFFORTS)[number];
-const EFFORT: Effort = EFFORTS.includes(process.env.DESIGNER_EFFORT as Effort)
-  ? (process.env.DESIGNER_EFFORT as Effort)
-  : "medium";
+// The AI interior designer: Claude studies the photo and returns a structured
+// design plan. Runs on the server (web app) or directly on the phone (Android app).
 
-export function claudeConfigured() {
-  return Boolean(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN);
+export const EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
+export type Effort = (typeof EFFORTS)[number];
+
+export interface DesignerConfig {
+  /** Omit on the server to use ANTHROPIC_API_KEY from the environment. */
+  apiKey?: string;
+  model?: string;
+  effort?: Effort;
+  /** True when calling from a browser / app WebView with the user's own key. */
+  browser?: boolean;
 }
 
-let client: Anthropic | null = null;
-function getClient() {
-  client ??= new Anthropic();
+const DEFAULT_MODEL = "claude-opus-5-5";
+const clients = new Map<string, Anthropic>();
+
+function getClient(cfg: DesignerConfig) {
+  const id = `${cfg.browser ? "b" : "s"}:${cfg.apiKey ?? ""}`;
+  let client = clients.get(id);
+  if (!client) {
+    client = new Anthropic({
+      ...(cfg.apiKey ? { apiKey: cfg.apiKey } : {}),
+      ...(cfg.browser ? { dangerouslyAllowBrowser: true } : {}),
+    });
+    clients.set(id, client);
+  }
   return client;
 }
 
-/** Ask Claude, acting as an expert wedding designer, to study the photo and return a full design plan. */
-export async function designSpace(image: InputImage, details: EventDetails): Promise<DesignResult> {
+export async function designSpace(image: InputImage, details: EventDetails, cfg: DesignerConfig): Promise<DesignResult> {
   const format = betaZodOutputFormat(DesignResultSchema);
   let response;
   try {
     // Plain create (not .parse) so a refusal or cut-off reply can be reported
     // nicely instead of failing inside the SDK's JSON parser.
-    response = await getClient().beta.messages.create({
-      model: MODEL,
+    response = await getClient(cfg).beta.messages.create({
+      model: cfg.model || DEFAULT_MODEL,
       max_tokens: 16000,
       // If the model declines for policy reasons, let the API retry on its default fallback model.
       betas: ["server-side-fallback-2026-07-01"],
       fallbacks: "default",
       system: [{ type: "text", text: DESIGNER_SYSTEM_PROMPT, cache_control: { type: "ephemeral" } }],
-      output_config: { effort: EFFORT, format },
+      output_config: { effort: cfg.effort ?? "medium", format },
       messages: [
         {
           role: "user",
@@ -48,7 +61,7 @@ export async function designSpace(image: InputImage, details: EventDetails): Pro
       ],
     });
   } catch (error) {
-    throw toHttpError(error);
+    throw toHttpError(error, cfg);
   }
 
   if (response.stop_reason === "refusal") {
@@ -82,9 +95,10 @@ function normalize(design: DesignResult): DesignResult {
   };
 }
 
-function toHttpError(error: unknown): HttpError {
+function toHttpError(error: unknown, cfg: DesignerConfig): HttpError {
+  const keyName = cfg.browser ? "Anthropic API key in Settings" : "ANTHROPIC_API_KEY";
   if (error instanceof Anthropic.AuthenticationError) {
-    return new HttpError(500, "The Anthropic API key is invalid. Check ANTHROPIC_API_KEY.");
+    return new HttpError(500, `The Anthropic API key is invalid. Check the ${keyName}.`);
   }
   if (error instanceof Anthropic.PermissionDeniedError) {
     return new HttpError(500, "The Anthropic API key doesn't have access to this model.");
@@ -99,7 +113,7 @@ function toHttpError(error: unknown): HttpError {
     return new HttpError(503, "The AI service is temporarily unavailable. Please try again shortly.");
   }
   if (error instanceof Anthropic.APIConnectionError) {
-    return new HttpError(503, "Couldn't reach the AI service. Check the server's internet connection.");
+    return new HttpError(503, "Couldn't reach the AI service. Check your internet connection.");
   }
   if (error instanceof Anthropic.APIError) {
     return new HttpError(502, `AI service error: ${error.message}`);

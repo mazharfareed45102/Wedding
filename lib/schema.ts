@@ -99,8 +99,27 @@ export interface GenerateResponse {
   model?: string;
 }
 
+export type ImageProvider = "gemini" | "openai";
+
 export interface StatusResponse {
   designer: boolean;
-  imageProvider: "gemini" | "openai" | null;
+  imageProvider: ImageProvider | null;
   passcodeRequired: boolean;
+}
+
+export const ALLOWED_MEDIA_TYPES = ["image/jpeg", "image/png", "image/webp"] as const;
+export type AllowedMediaType = (typeof ALLOWED_MEDIA_TYPES)[number];
+
+export interface InputImage {
+  data: string; // base64, no data: prefix
+  mediaType: AllowedMediaType;
+}
+
+export interface GenerateRequest {
+  image: InputImage;
+  mode: "design" | "refine";
+  /** The concept's image prompt (design) or the requested change (refine). */
+  prompt: string;
+  /** Width / height of the original photo. */
+  aspect: number;
 }

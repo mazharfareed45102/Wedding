@@ -10,9 +10,36 @@ An AI interior designer:
 - creates a **photorealistic "after" picture** of your space decorated in that concept, with a drag slider to compare it with your original photo
 - lets you **refine the picture** ("add more marigolds on the ceiling", "make the stage bigger"), keep several versions, download them, and save the whole plan as a PDF
 
-It works on phones too. Tap the upload box to take a photo with your camera.
+It comes as an **Android app** (see below) and as a **website** you can run or host yourself.
 
-## Quick start
+## Android app (APK)
+
+Every push to GitHub builds a fresh Android app automatically.
+
+**Download:** open the [latest-apk release](https://github.com/mazharfareed45102/Wedding/releases/tag/latest-apk) on your Android phone and tap **WeddingDecorStudio.apk**.
+
+**Install:**
+
+1. Open the downloaded file. If Android asks, allow your browser or file manager to install apps ("Install unknown apps").
+2. If Google Play Protect warns about an unknown developer, tap **More details → Install anyway**. This is normal for apps that aren't from the Play Store.
+3. Open **Wedding Decor Studio**, tap the **gear icon** (top right) and paste your API keys (see [API keys](#api-keys)). Without keys the app shows sample designs.
+
+The app doesn't need a website or server: it sends your photo straight from your phone to Claude and to the image service, using your own keys. Keys are stored only on the phone. Use **Take a photo now** to snap your space, and **Save or share photo** / **Share this plan** to send designs to family on WhatsApp.
+
+New builds install over the old one and keep your keys. Every build is signed with the same key, which is committed in `android/` so the automatic build can use it. That's fine for installing the app yourself; create your own private signing key before publishing to Google Play.
+
+**Build it yourself** (needs Android Studio or the Android SDK and Java 21):
+
+```bash
+npm install
+npm run android:sync          # builds the app files and copies them into android/
+cd android && ./gradlew assembleRelease
+# → android/app/build/outputs/apk/release/app-release.apk
+```
+
+The build runs in `.github/workflows/android.yml`; you can also start it by hand from the **Actions** tab (**Build Android app → Run workflow**).
+
+## Website version: quick start
 
 You need [Node.js](https://nodejs.org) 20.9 or newer.
 
@@ -28,7 +55,7 @@ Open http://localhost:3000.
 
 ## API keys
 
-Add these to `.env.local` (or to your hosting provider's environment variables):
+In the Android app, add them under the gear icon (Settings). For the website, add them to `.env.local` (or to your hosting provider's environment variables):
 
 | Variable | Needed for | Where to get it |
 | --- | --- | --- |
@@ -77,12 +104,14 @@ Your photo ──► /api/analyze ──► Claude (vision + structured output)
 ```
 
 - `app/page.tsx` is the whole user interface: upload, event form, results, before/after slider and refine.
+- `lib/ai/` holds the AI calls, shared by the website's API routes (`app/api/`) and the Android app, which calls the AI services directly from the phone (`lib/client/backend.ts`).
 - `lib/prompts.ts` holds the designer's instructions. Edit it to change the designer's style or advice.
 - `lib/schema.ts` defines the structured design plan Claude returns.
-- `lib/server/claude.ts` makes the Claude call (`lib/server/imagegen.ts` handles the image providers).
+- `lib/ai/designer.ts` makes the Claude call; `lib/ai/images.ts` handles the image providers.
+- `android/` is the Android project (Capacitor). `scripts/build-mobile.mjs` builds the app files it packages.
 - `lib/demo.ts` holds the sample design used in demo mode.
 
-Photos are resized in the browser to 1600 px before upload. The app stores nothing: photos and designs are sent to Anthropic and your image provider to generate results, and live only in your browser tab.
+Photos are resized to 1600 px before upload. The app stores nothing on any server: photos and designs are sent to Anthropic and your image provider to generate results, and otherwise live only on your device.
 
 ## Tips for the best results
 

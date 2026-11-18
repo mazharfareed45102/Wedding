@@ -1,16 +1,28 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import BeforeAfter from "@/components/BeforeAfter";
 import ConceptDetails from "@/components/ConceptDetails";
 import EventForm from "@/components/EventForm";
+import SettingsDialog from "@/components/SettingsDialog";
 import SpaceReport from "@/components/SpaceReport";
 import Uploader from "@/components/Uploader";
-import { ApiError, loadPasscode, postJSON, savePasscode } from "@/lib/client/api";
+import { ApiError, loadPasscode, savePasscode } from "@/lib/client/api";
+import { deviceBackend, serverBackend } from "@/lib/client/backend";
 import { renderDemoAfter } from "@/lib/client/demoOverlay";
 import { prepareImage, slugify, toApiImage, type PreparedImage } from "@/lib/client/image";
+import {
+  chooseImageProvider,
+  EMPTY_SETTINGS,
+  isNativeApp,
+  loadSettings,
+  saveSettings,
+  STANDALONE,
+  type AppSettings,
+} from "@/lib/client/settings";
+import { planToText, saveImage, shareText } from "@/lib/client/share";
 import { DEFAULT_DETAILS, type EventDetails } from "@/lib/options";
-import type { AnalyzeResponse, DesignConcept, GenerateResponse, StatusResponse } from "@/lib/schema";
+import type { AnalyzeResponse, DesignConcept, StatusResponse } from "@/lib/schema";
 
 interface Version {
   url: string;
@@ -52,6 +64,10 @@ function conceptPrompt(c: DesignConcept) {
   ].join("\n");
 }
 
+function isCancel(e: unknown) {
+  return e instanceof Error && /cancel/i.test(e.message);
+}
+
 function Logo() {
   return (
     <svg width="34" height="34" viewBox="0 0 64 64" aria-hidden="true">
@@ -67,7 +83,12 @@ function Logo() {
 }
 
 export default function Home() {
-  const [status, setStatus] = useState<StatusResponse | null>(null);
+  const [serverStatus, setServerStatus] = useState<StatusResponse | null>(null);
+  const [settings, setSettings] = useState<AppSettings>(EMPTY_SETTINGS);
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [native, setNative] = useState(false);
+  const [toast, setToast] = useState("");
   const [photo, setPhoto] = useState<PreparedImage | null>(null);
   const [details, setDetails] = useState<EventDetails>(DEFAULT_DETAILS);
   const [passcode, setPasscode] = useState("");
@@ -86,15 +107,35 @@ export default function Home() {
   const resultsRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
+    setNative(isNativeApp());
+    if (STANDALONE) {
+      setSettings(loadSettings());
+      setSettingsLoaded(true);
+      return;
+    }
     setPasscode(loadPasscode());
     fetch("/api/status")
       .then((r) => r.json())
       .then((s: StatusResponse) => {
-        setStatus(s);
+        setServerStatus(s);
         if (s.passcodeRequired) setNeedPasscode(true);
       })
-      .catch(() => setStatus(null));
+      .catch(() => setServerStatus(null));
   }, []);
+
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(""), 3000);
+    return () => clearTimeout(t);
+  }, [toast]);
+
+  const status: StatusResponse | null = STANDALONE
+    ? settingsLoaded
+      ? { designer: Boolean(settings.anthropicKey), imageProvider: chooseImageProvider(settings), passcodeRequired: false }
+      : null
+    : serverStatus;
+
+  const backend = useMemo(() => (STANDALONE ? deviceBackend(settings) : serverBackend(passcode)), [settings, passcode]);
 
   useEffect(() => {
     if (!analyzing) return;
@@ -125,16 +166,12 @@ export default function Home() {
       }));
       try {
         const base = refinement && currentVersion && !currentVersion.demo ? await prepareImage(currentVersion.url) : res.photo;
-        const data = await postJSON<GenerateResponse>(
-          "/api/generate",
-          {
-            image: toApiImage(base),
-            mode: refinement ? "refine" : "design",
-            prompt: refinement ?? conceptPrompt(concept),
-            aspect: res.photo.width / res.photo.height,
-          },
-          passcode,
-        );
+        const data = await backend.generate({
+          image: toApiImage(base),
+          mode: refinement ? "refine" : "design",
+          prompt: refinement ?? conceptPrompt(concept),
+          aspect: res.photo.width / res.photo.height,
+        });
         let version: Version;
         if (data.demo || !data.image) {
           const url = await renderDemoAfter(
@@ -157,7 +194,7 @@ export default function Home() {
         updateAfter(index, (s) => ({ ...s, status: s.versions.length ? "done" : "error", error: message }));
       }
     },
-    [passcode, handleApiError],
+    [backend, handleApiError],
   );
 
   async function design() {
@@ -166,11 +203,7 @@ export default function Home() {
     setAnalyzing(true);
     const session = ++sessionRef.current;
     try {
-      const data = await postJSON<AnalyzeResponse>(
-        "/api/analyze",
-        { image: toApiImage(photo), details },
-        passcode,
-      );
+      const data: AnalyzeResponse = await backend.analyze(toApiImage(photo), details);
       if (session !== sessionRef.current) return;
       const res: Result = { ...data, photo, details };
       setResult(res);
@@ -202,6 +235,26 @@ export default function Home() {
     document.getElementById("occasion")?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
+  async function savePhoto(url: string, name: string, index: number) {
+    try {
+      const ext = url.startsWith("data:image/jpeg") ? "jpg" : "png";
+      const how = await saveImage(url, `wedding-design-${slugify(name)}-v${index + 1}.${ext}`, name);
+      if (how === "downloaded") setToast("Photo downloaded");
+    } catch (e) {
+      if (!isCancel(e)) setToast("Couldn't save the photo. Please try again.");
+    }
+  }
+
+  async function sharePlan() {
+    if (!result || !concept) return;
+    try {
+      const how = await shareText(`${concept.name} — wedding decor plan`, planToText(result.design, concept, result.details.event));
+      if (how === "copied") setToast("Plan copied — paste it into WhatsApp or notes");
+    } catch (e) {
+      if (!isCancel(e)) setToast("Couldn't share the plan.");
+    }
+  }
+
   const concept = result?.design.concepts[selected];
   const after = afters[selected] ?? EMPTY_AFTER;
   const version = after.versions[after.current];
@@ -217,13 +270,53 @@ export default function Home() {
               Wedding Decor <em>Studio</em>
             </span>
           </a>
-          {status && (
-            <span className={`pill ${anyAiMissing ? "pill-warn" : "pill-ok"}`}>
-              {anyAiMissing ? "Demo mode" : "AI designer ready"}
-            </span>
-          )}
+          <div className="header-actions">
+            {status && (
+              <span className={`pill ${anyAiMissing ? "pill-warn" : "pill-ok"}`}>
+                {anyAiMissing ? "Demo mode" : "AI ready"}
+              </span>
+            )}
+            {STANDALONE && (
+              <button
+                type="button"
+                className="icon-btn"
+                aria-label="Settings"
+                title="Settings"
+                onClick={() => setShowSettings(true)}
+              >
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <circle cx="12" cy="12" r="3" stroke="currentColor" strokeWidth="1.8" />
+                  <path
+                    d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"
+                    stroke="currentColor"
+                    strokeWidth="1.5"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </button>
+            )}
+          </div>
         </div>
       </header>
+
+      {showSettings && (
+        <SettingsDialog
+          value={settings}
+          onClose={() => setShowSettings(false)}
+          onSave={(next) => {
+            setSettings(next);
+            const stored = saveSettings(next);
+            setShowSettings(false);
+            setToast(stored ? "Settings saved" : "Settings saved for this session only");
+          }}
+        />
+      )}
+
+      {toast && (
+        <div className="toast" role="status">
+          {toast}
+        </div>
+      )}
 
       <main className="wrap">
         <section className="hero">
@@ -246,14 +339,25 @@ export default function Home() {
           </ol>
         </section>
 
-        {anyAiMissing && (
-          <div className="notice" role="note">
-            <strong>Demo mode.</strong>{" "}
-            {!status.designer && "Add ANTHROPIC_API_KEY to get a real designer's analysis of your photo. "}
-            {!status.imageProvider && "Add GEMINI_API_KEY or OPENAI_API_KEY for photorealistic after pictures. "}
-            Until then you&rsquo;ll see sample designs so you can try the app.
-          </div>
-        )}
+        {anyAiMissing &&
+          (STANDALONE ? (
+            <div className="notice" role="note">
+              <strong>Demo mode.</strong>{" "}
+              {!status.designer && "Add your Anthropic API key for a real designer's analysis of your photo. "}
+              {!status.imageProvider && "Add a Gemini or OpenAI key for photorealistic after pictures. "}
+              Until then you&rsquo;ll see sample designs.{" "}
+              <button type="button" className="link-btn" onClick={() => setShowSettings(true)}>
+                Open Settings
+              </button>
+            </div>
+          ) : (
+            <div className="notice" role="note">
+              <strong>Demo mode.</strong>{" "}
+              {!status.designer && "Add ANTHROPIC_API_KEY to get a real designer's analysis of your photo. "}
+              {!status.imageProvider && "Add GEMINI_API_KEY or OPENAI_API_KEY for photorealistic after pictures. "}
+              Until then you&rsquo;ll see sample designs so you can try the app.
+            </div>
+          ))}
 
         <section className="card step" aria-labelledby="space-step">
           <h2 id="space-step">
@@ -267,7 +371,7 @@ export default function Home() {
             <span className="step-num">2</span> The occasion
           </h2>
           <EventForm value={details} onChange={setDetails} disabled={analyzing} />
-          {needPasscode && (
+          {needPasscode && !STANDALONE && (
             <label className="field passcode">
               <span className="label">App passcode</span>
               <input
@@ -377,8 +481,10 @@ export default function Home() {
                       )}
                       {version?.demo && (
                         <p className="muted small">
-                          This is a demo preview. Add GEMINI_API_KEY or OPENAI_API_KEY to the server to get a
-                          photorealistic AI design of your space.
+                          This is a demo preview.{" "}
+                          {STANDALONE
+                            ? "Add a Gemini or OpenAI key in Settings to get a photorealistic AI design of your space."
+                            : "Add GEMINI_API_KEY or OPENAI_API_KEY to the server to get a photorealistic AI design of your space."}
                         </p>
                       )}
 
@@ -390,13 +496,13 @@ export default function Home() {
                         )}
                         {version && after.status !== "loading" && (
                           <>
-                            <a
+                            <button
+                              type="button"
                               className="btn btn-primary"
-                              href={version.url}
-                              download={`wedding-design-${slugify(concept.name)}-v${after.current + 1}.${version.url.startsWith("data:image/jpeg") ? "jpg" : "png"}`}
+                              onClick={() => savePhoto(version.url, concept.name, after.current)}
                             >
-                              Download after photo
-                            </a>
+                              {native ? "Save or share photo" : "Download after photo"}
+                            </button>
                             <button type="button" className="btn btn-ghost" onClick={() => generateAfter(result, selected)}>
                               Generate another version
                             </button>
@@ -490,6 +596,11 @@ export default function Home() {
 
             <div className="results-actions no-print">
               {result.design.usable_photo && (
+                <button type="button" className="btn btn-ghost" onClick={sharePlan}>
+                  Share this plan
+                </button>
+              )}
+              {result.design.usable_photo && !native && (
                 <button type="button" className="btn btn-ghost" onClick={() => window.print()}>
                   Save plan as PDF
                 </button>

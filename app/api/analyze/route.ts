@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
-import { demoDesign } from "@/lib/demo";
+import { analyzeSpace } from "@/lib/ai/service";
 import { BUDGETS, DEFAULT_DETAILS, type BudgetId, type EventDetails } from "@/lib/options";
 import type { AnalyzeResponse } from "@/lib/schema";
-import { claudeConfigured, designSpace } from "@/lib/server/claude";
+import { serverDesignerConfig } from "@/lib/server/config";
 import { HttpError, jsonError, parseInputImage, requirePasscode, str } from "@/lib/server/http";
 
 export const runtime = "nodejs";
@@ -31,14 +31,7 @@ export async function POST(req: Request) {
     if (!body) throw new HttpError(400, "Invalid request.");
     const image = parseInputImage(body.image);
     const details = parseDetails(body.details);
-
-    if (!claudeConfigured()) {
-      await new Promise((r) => setTimeout(r, 1200)); // let the loading screen show briefly
-      return NextResponse.json<AnalyzeResponse>({ design: demoDesign(details.event), demo: true });
-    }
-
-    const design = await designSpace(image, details);
-    return NextResponse.json<AnalyzeResponse>({ design, demo: false });
+    return NextResponse.json<AnalyzeResponse>(await analyzeSpace(image, details, serverDesignerConfig()));
   } catch (error) {
     return jsonError(error);
   }

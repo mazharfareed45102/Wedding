@@ -1,15 +1,9 @@
 import { timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
+import { HttpError } from "../errors";
+import { ALLOWED_MEDIA_TYPES, type AllowedMediaType, type InputImage } from "../schema";
 
-export class HttpError extends Error {
-  constructor(
-    public status: number,
-    message: string,
-    public code?: string,
-  ) {
-    super(message);
-  }
-}
+export { HttpError };
 
 export function jsonError(error: unknown) {
   if (error instanceof HttpError) {
@@ -29,14 +23,6 @@ export function requirePasscode(req: Request) {
   if (a.length !== b.length || !timingSafeEqual(a, b)) {
     throw new HttpError(401, "Please enter the app passcode.", "PASSCODE");
   }
-}
-
-export const ALLOWED_MEDIA_TYPES = ["image/jpeg", "image/png", "image/webp"] as const;
-export type AllowedMediaType = (typeof ALLOWED_MEDIA_TYPES)[number];
-
-export interface InputImage {
-  data: string; // base64, no data: prefix
-  mediaType: AllowedMediaType;
 }
 
 const MAX_BASE64_LENGTH = 7_000_000; // ~5 MB of image bytes
